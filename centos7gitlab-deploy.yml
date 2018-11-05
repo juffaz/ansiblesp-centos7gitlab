@@ -1,0 +1,81 @@
+
+---
+- hosts: gitlab 
+
+  vars: 
+    gitlab_external_url: http://gitlab.sample.com 
+    gitlab_smtp_address: smtp.mail.sample.com
+    gitlab_smtp_port: 587 
+    gitlab_smtp_user_name: gitlabnot@sample.com 
+    gitlab_smtp_password: 'sample_pass'
+    gitlab_smtp_domain: sample.com 
+
+  tasks:
+    - name: Make sure that we can connect to the machine
+      ping:
+
+    - name: Yum install postfix pkg
+      yum: name="{{ item }}" state=present
+      with_items:
+      - curl
+      - postfix
+      - policycoreutils-python
+      - openssh-server
+
+    - name: start postfix service
+      systemd: state=restarted enabled=yes name=postfix daemon_reload=yes
+
+    - name: make sure daemon is reloaded (ansible bug)
+      shell: systemctl daemon-reload
+      
+    - name: Check if GitLab configuration file already exists.
+      stat: path=/etc/gitlab/gitlab.rb
+      register: gitlab_config_file
+
+    - name: Check if GitLab is already installed.
+      stat: path=/usr/bin/gitlab-ctl
+      register: gitlab_file
+
+    - name: Download GitLab repository installation script
+      get_url: url=https://packages.gitlab.com/install/repositories/gitlab/gitlab-ce/script.rpm.sh dest=/tmp/gitlab_install_repository.sh
+      when: not gitlab_file.stat.exists
+
+    - name: Install GitLab repository.
+      command: bash /tmp/gitlab_install_repository.sh
+      when: not gitlab_file.stat.exists
+
+    - name: Install GitLab CE package.
+      yum: name=gitlab-ce state=present
+
+    - name: Reconfigure GitLab (first run).
+      command: >
+        gitlab-ctl reconfigure
+        creates=/var/opt/gitlab/bootstrapped
+      failed_when: false
+
+    - name: Copy GitLab configuration file.
+      template:
+        src: files/gitlab.rb.j2
+        dest: /etc/gitlab/gitlab.rb
+        owner: root
+        group: root
+        mode: 0600
+      notify: restart gitlab
+
+
+    - name: insert firewalld rule for tomcat http port
+      firewalld: port={{ 80 }}/tcp permanent=true state=enabled immediate=yes
+      when: "ansible_os_family == 'RedHat' and ansible_distribution_major_version == '7'"
+
+    - name: insert firewalld rule for tomcat https port
+      firewalld: port={{ 443 }}/tcp permanent=true state=enabled immediate=yes
+      when: "ansible_os_family == 'RedHat' and ansible_distribution_major_version == '7'"
+
+  handlers:
+    - name: restart gitlab
+      command: gitlab-ctl reconfigure
+      register: gitlab_restart
+      failed_when: 'gitlab_restart.rc != 0' 
+
+
+
